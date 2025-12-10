@@ -1,79 +1,43 @@
 import time
 import os
 import ast
+from pathlib import Path
+import NodeCollector
+import json
 
-def _get_node_kind(node: ast.AST) -> str:
+def _module_name_from_path(filepath, package_root):
     """
-    Map AST node types to human-readable kinds.
-    Returns a short kind string for nodes we care about, or "statement" for others.
+    Optional helper: derive module name from the file path.
+    - filepath: e.g. "/root/project/pkg/subpkg/mod.py"
+    - package_root: e.g. "/root/project" or "/root/project/pkg"
     """
-    kind_map = {
-        ast.ClassDef: "class",
-        ast.FunctionDef: "function",
-        ast.AsyncFunctionDef: "async_function",
-        ast.For: "for_loop",
-        ast.While: "while_loop",
-        ast.If: "if_statement",
-        ast.Try: "try_statement",
-        ast.With: "with_statement",
-        ast.AsyncWith: "async_with_statement",
-        ast.AsyncFor: "async_for_loop",
-        ast.ListComp: "list_comprehension",
-        ast.DictComp: "dict_comprehension",
-        ast.SetComp: "set_comprehension",
-        ast.GeneratorExp: "generator_expression",
-        ast.Lambda: "lambda",
-        ast.Return: "return_statement",
-        ast.Yield: "yield_statement",
-        ast.YieldFrom: "yield_from_statement",
-        ast.Raise: "raise_statement",
-        ast.Assert: "assert_statement",
-        ast.Break: "break_statement",
-        ast.Continue: "continue_statement",
-        ast.Pass: "pass_statement",
-    }
-    return kind_map.get(type(node), "skip_node")
+    if package_root is None:
+        return None
 
-def extract_ast_nodes(filepath):
-    """Extract selected AST nodes (filtered by kind) with their positions"""
+    root = Path(package_root).resolve()
+    file = Path(filepath).resolve()
+    rel = file.relative_to(root).with_suffix("")  # strip .py
+    return ".".join(rel.parts)
+
+def extract_ast_nodes(filepath, package_root: str | None = None):
     with open(filepath, "r", encoding="utf-8") as source:
         code = source.read()
 
-    result = {}
     try:
-        program = ast.parse(code)
-        for node in ast.walk(program):
-            kind = _get_node_kind(node)
-            if kind == "skip_node":
-                continue  # skip nodes we don't map explicitly
-            if not hasattr(node, "name"):
-                continue
-
-            # has the following attributes
-            # ('lineno', 'col_offset', 'end_lineno', 'end_col_offset')
-            # TODO: figure out where the "name" attribute is coming from and find qualified_name
-            
-            node_type = type(node).__name__
-            start_line = getattr(node, "lineno", None)
-            end_line = getattr(node, "end_lineno", None)
-            name = getattr(node, "name", None)
-
-            # # Prefer a readable key: use `name` for classes/functions, otherwise node type + start line
-            # key = f"{node_type}:{node.name}"
-            key = name
-            result[key] = {
-                "kind": node_type,
-                "name": name,
-                "pos": {"start": start_line, "end": end_line},
-            }
-
-        return {filepath: result}
+        tree = ast.parse(code)
     except SyntaxError:
         return
+
+    module_name = _module_name_from_path(filepath, package_root)
+    collector = NodeCollector.NodeCollector(module_name=module_name)
+    collector.visit(tree)
+
+    return {filepath: collector.result}
     
 
 def extract(pkgstr: str, dir:str):
     seen_namespaces = set()
+    result = {}
 
 
     # TODO: use os.walk to go through each file
@@ -85,17 +49,19 @@ def extract(pkgstr: str, dir:str):
             if not filename.endswith(".py"):
                 continue
             path = os.path.join(root, filename ) #filename
-            qualified_name = _derive_module_namespace(pkgstr, dir, filename) #qualified name
-            if qualified_name not in seen_namespaces:
-                seen_namespaces.add(qualified_name)
+            qualified_file_name = _derive_module_namespace(pkgstr, dir, filename) #qualified name
+            if qualified_file_name not in seen_namespaces:
+                seen_namespaces.add(qualified_file_name)
                 # nodes.Namespaces.append(qualified_name) # TODO: Change this to QName instead of namespaces
+                nodes_dict = extract_ast_nodes(path)
+                if nodes_dict:
+                    result.update(nodes_dict)
 
-            nodes_dict = extract_ast_nodes(path)
-            print(nodes_dict)
+            
     
 
     elapsed = time.time() - start
-    return elapsed
+    return result, elapsed
 
 
 def _derive_module_namespace(pkgstr: str, dir_path: str, file_path: str) -> str:
@@ -144,7 +110,9 @@ def extract_cli() -> None:
     #     if not pkg:
     #         pkg = _pkg_from_repo_url(args.repo)
 
-    elapsed = extract(pkg, work_dir)
+    res, elapsed = extract(pkg, work_dir)
+    json_output = json.dumps(res, indent=2)
+    # print(json_output)
     # out_path = args.out
     # out_dir = os.path.dirname(out_path) or "."
     # os.makedirs(out_dir, exist_ok=True)
