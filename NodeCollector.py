@@ -19,8 +19,9 @@ def _get_node_kind(node: ast.AST) -> str:
 
 
 class NodeCollector(ast.NodeVisitor):
-    def __init__(self, module_name: Optional[str] = None):
+    def __init__(self, module_name: Optional[str] = None, source_file: Optional[str] = None):
         self.module_name = module_name
+        self.source_file = source_file
         self.scope_stack: list[str] = []
         self.scope_kinds: list[str] = []
         self.result: Dict[str, Dict[str, Any]] = {}
@@ -54,6 +55,7 @@ class NodeCollector(ast.NodeVisitor):
             "parent_qualified_name": parent_qualified_name,
             "annotation": annotation,
             "modifier": modifier,
+            "docstring": None,
             "relations": [],
         }
 
@@ -105,12 +107,14 @@ class NodeCollector(ast.NodeVisitor):
     def _make_synthetic_key(self, node: ast.AST, kind: str) -> str:
         """
         Create a stable-ish key for unnamed nodes, based on parent scope,
-        kind, and position.
+        kind, and an internal counter. Uses dotted file-prefixed format.
         """
-        parent = self._current_scope_qual() or self.module_name
-        line = getattr(node, "lineno", 0)
-        col = getattr(node, "col_offset", 0)
-        return f"{parent}:{kind}"
+        parent = self._current_scope_qual() or self.module_name or self.source_file or "<unknown>"
+        counter_key = (parent, kind)
+        cur = self._synthetic_counters.get(counter_key, 0) + 1
+        self._synthetic_counters[counter_key] = cur
+        return f"{parent}.{kind}.{cur}"
+
 
     def _set_relation(self, meta: Dict[str, Any], source: Optional[str], rel_type: Optional[Union[RelType, str]], target: Optional[str], pos: Optional[Dict[str, Optional[int]]] = None):
         """Append a relation to the meta's relations list."""
@@ -150,6 +154,8 @@ class NodeCollector(ast.NodeVisitor):
             modifier=None,
         )
 
+        meta["docstring"] = self._extract_docstring(node)
+
         rel_type = None
         if kind == "class":
             rel_type = RelType.CLASS_DEF
@@ -183,8 +189,9 @@ class NodeCollector(ast.NodeVisitor):
 
     def _record_import_node(self, node: ast.AST, module: str, alias: Optional[str]):
         name = alias or module
+        # Use qualified name so the key is file-prefixed / scope-prefixed
+        key = self._make_qualname(name)
         parent_qual = self._current_scope_qual() or self.module_name
-        key = name  # Use the imported name as the unique key
 
         meta = self._make_base_meta(
             qualified_name=key,
@@ -196,7 +203,7 @@ class NodeCollector(ast.NodeVisitor):
             annotation=None,
             modifier=None,
         )
-        self._set_relation(meta, source=name, rel_type=RelType.IMPORTS, target=parent_qual, pos=meta["pos"])
+        self._set_relation(meta, source=key, rel_type=RelType.IMPORTS, target=parent_qual, pos=meta["pos"])
         self.result[key] = meta
 
 
@@ -205,7 +212,7 @@ class NodeCollector(ast.NodeVisitor):
         param_name = getattr(arg, "arg", None)
         if not param_name:
             return
-        key = f"{func_qual}::param:{param_name}"
+        key = f"{func_qual}.param.{param_name}"
         annotation = None
         if getattr(arg, "annotation", None) is not None:
             try:
@@ -235,7 +242,7 @@ class NodeCollector(ast.NodeVisitor):
         except Exception:
             return_type = None
 
-        key = f"{func_qual}::return"
+        key = f"{func_qual}.return"
         meta = self._make_base_meta(
             qualified_name=key,
             parent_qualified_name=func_qual,
@@ -253,6 +260,12 @@ class NodeCollector(ast.NodeVisitor):
     def _record_function_relationships(self, func_qual: str):
         # Intentionally minimal: no extra relationships beyond definition edges
         return
+    
+    def _extract_docstring(self, node):
+        """Extract docstring from the first statement if it's a string constant."""
+        if node.body and isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Constant) and isinstance(node.body[0].value.value, str):
+            return node.body[0].value.value
+        return None
 
     def _extract_call_name(self, func: ast.AST) -> Optional[str]:
         if isinstance(func, ast.Name):

@@ -21,6 +21,13 @@ def _module_name_from_path(filepath, package_root):
     rel = file.relative_to(root).with_suffix("")
     return ".".join(rel.parts)
 
+
+def _extract_docstring_from_tree(tree):
+    """Extract module docstring from the AST tree."""
+    if tree.body and isinstance(tree.body[0], ast.Expr) and isinstance(tree.body[0].value, ast.Constant) and isinstance(tree.body[0].value.value, str):
+        return tree.body[0].value.value
+    return None
+
 def extract_ast_nodes(filepath, qualified_file_name, package_root: str | None = None):
     with open(filepath, "r", encoding="utf-8") as source:
         code = source.read()
@@ -31,8 +38,22 @@ def extract_ast_nodes(filepath, qualified_file_name, package_root: str | None = 
         return
 
     module_name = _module_name_from_path(filepath, package_root)
-    collector = NodeCollector.NodeCollector(module_name=module_name)
+    # use the per-file qualified name as the module namespace
+    collector = NodeCollector.NodeCollector(module_name=qualified_file_name, source_file=qualified_file_name)
     collector.visit(tree)
+
+    # Add module node with docstring (keyed by the file-qualified name)
+    docstring = _extract_docstring_from_tree(tree)
+    collector.result[qualified_file_name] = {
+        "kind": "module",
+        "name": qualified_file_name,
+        "pos": {"start": 1, "end": 1},
+        "ast_type": "Module",
+        "docstring": docstring,
+        "relations": [],
+        "qualified_name": qualified_file_name,
+        "parent_qualified_name": None,
+    }
 
     return collector.result
     
