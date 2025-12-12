@@ -1,112 +1,98 @@
-# PyDexer
+# PyDexer: Python Code Graph Indexer
 
-A Python code indexer that extracts and indexes code structure from Python source files using Abstract Syntax Tree (AST) parsing.
-
-## Overview
-
-pydexer walks through Python source directories, parses each `.py` file using Python's AST module, and extracts structured metadata about code elements including classes, functions, control flow statements, and more. The extracted data is output as JSON with qualified names, positions, and hierarchical relationships.
+PyDexer is an AST-based Python code indexer that extracts structural metadata from Python codebases, building a graph of nodes (classes, functions, etc.) and relationships (calls, imports, etc.). It outputs JSON for analysis or ingestion into Neo4j for querying and visualization. Ideal for code intelligence, refactoring, and AI-driven insights.
 
 ## Features
 
-- **AST-based parsing**: Uses Python's built-in `ast` module for accurate code analysis
-- **Comprehensive node extraction**: Indexes classes, functions (sync and async), loops, conditionals, comprehensions, and control flow statements
-- **Qualified naming**: Tracks fully qualified names (e.g., `module.Class.method`) with parent-child relationships
-- **Position tracking**: Records start and end line numbers for each extracted node
-- **Package-aware**: Supports module/package prefix naming for proper namespace resolution
-- **CLI interface**: Command-line tool for easy execution
+- **AST-Powered Extraction**: Precise parsing of classes, functions, control flow, imports, and more.
+- **Qualified Naming**: Tracks scoped names (e.g., `mypackage.MyClass.method`) and hierarchies.
+- **Bidirectional Relations**: Captures calls, definitions, and their inverses (e.g., CALLS/CALLED_BY).
+- **Position Tracking**: Line/column positions for IDE-like navigation.
+- **Flat JSON Schema**: Normalized output with embedded relations for easy graph building.
+- **CLI & API**: Command-line tool and Python imports for integration.
+- **Neo4j Ingestion**: Bulk loading with batching and indexes for large graphs.
+- **Git Support**: Clone and index remote repositories.
 
 ## Installation
 
-No external dependencies required - uses only Python standard library modules:
-- `ast`
-- `json`
-- `argparse`
-- `pathlib`
+### Prerequisites
+- **Python 3.8+**: For AST parsing.
+- **Neo4j (Optional)**: For graph storage. Install Neo4j Desktop/Server and set env vars:
+  ```bash
+  export NEO4J_URI="neo4j://localhost:7687"
+  export NEO4J_USER="neo4j"
+  export NEO4J_PASSWORD="your_password"
+  ```
+- **Git (Optional)**: For repo cloning.
+
+### Setup
+1. Clone/download pydexer.
+2. Core extraction uses only Python stdlib (`ast`, `json`, etc.).
+3. For Neo4j: `pip install neo4j`.
+4. (Optional) `.env` file for credentials.
 
 ## Usage
 
-### Command Line Interface
-h
-python extract.py --pkg <package_prefix> --dir <directory> --out <output_file>**Arguments:**
-- `--pkg`: Package/module prefix (e.g., `github.com/org/repo`)
-- `--dir`: Root directory to walk (default: current directory)
-- `--out`: Path to write JSON output (default: `output/output.json`)
+### CLI
+Index directories or Git repos to JSON.
 
-**Example:**
-
-```shell
-python extract.py --pkg myproject --dir ./src --out results.json
+```bash
+python extract.py --pkg myproject --dir ./src --out graph.json
+python extract.py --repo https://github.com/user/repo.git --out repo_graph.json
 ```
 
-### Programmatic Usage
+Options: `--pkg` (prefix), `--dir` (local path), `--repo` (Git URL), `--ref` (branch), `--out` (output file).
+
+### Programmatic
 ```python
 from extract import extract, extract_ast_nodes
 
-# Extract from entire directory
-result, elapsed = extract(pkgstr="myproject", dir="./src")
-
-# Extract from single file
-nodes_dict = extract_ast_nodes("path/to/file.py", package_root="./src")## Output Format
+result, time = extract("myproject", "./src")
+nodes = extract_ast_nodes("file.py", "module", "./src")
 ```
-The indexer outputs a dictionary mapping file paths to node collections. Each node contains:
 
-- `kind`: Human-readable node type (e.g., "class", "function", "for_loop")
-- `ast_type`: Exact AST node type name
-- `name`: Local name of the node (if applicable)
-- `qualified_name`: Fully qualified name including module and parent scopes
-- `parent_qualified_name`: Qualified name of the parent scope
-- `pos`: Position information with `start` and `end` line numbers
+### Neo4j Ingestion
+1. Create indexes in Neo4j:
+   ```cypher
+   CREATE INDEX FOR (n:CodeNode) ON (n.id);
+   CREATE INDEX FOR (n:CodeNode) ON (n.qualified_name);
+   CREATE INDEX FOR (n:CodeNode) ON (n.parent_qualified_name);
+   ```
+2. Ingest: `python ingest.py` (uses `output/output.json`).
+3. Query: `MATCH (a)-[:CALLS]->(b) RETURN a.name, b.name`.
 
-**Example output:**
+## Output Schema
+
+Flat JSON: `{"qualified_name": {"kind": "...", "relations": [...]}}`.
+
+Example:
 ```json
 {
-  "path/to/file.py": {
-    "module.ClassName": {
-      "kind": "class",
-      "ast_type": "ClassDef",
-      "name": "ClassName",
-      "qualified_name": "module.ClassName",
-      "parent_qualified_name": null,
-      "pos": {"start": 10, "end": 25}
-    },
-    "module.ClassName.method": {
-      "kind": "function",
-      "ast_type": "FunctionDef",
-      "name": "method",
-      "qualified_name": "module.ClassName.method",
-      "parent_qualified_name": "module.ClassName",
-      "pos": {"start": 15, "end": 20}
-    }
+  "mymodule.MyClass": {
+    "kind": "class",
+    "name": "MyClass",
+    "pos": {"start": 10, "end": 25},
+    "relations": [{"rel_type": "CLASS_DEF", "target": "mymodule", "pos": {"start": 10}}]
   }
 }
 ```
-## Supported Node Types
 
-The indexer extracts the following node types:
-
-**Named nodes:**
-- Classes (`ClassDef`)
-- Functions (`FunctionDef`)
-- Async functions (`AsyncFunctionDef`)
-
-**Control flow:**
-- For loops (`For`, `AsyncFor`)
-- While loops (`While`)
-- If statements (`If`)
-- Try statements (`Try`)
-- With statements (`With`, `AsyncWith`)
-
-**Expressions:**
-- List/dict/set comprehensions
-- Generator expressions
-- Lambda functions
-
-**Statements:**
-- Return, yield, yield from
-- Raise, assert
-- Break, continue, pass
+Relations: `CLASS_DEF`, `FUNCTION_DEF`, `CALLS`/`CALLED_BY`, `IMPORTS`, etc.
 
 ## Architecture
 
-- **`extract.py`**: Main extraction logic, directory walking, and CLI interface
-- **`NodeCollector.py`**: AST visitor class that traverses the syntax tree and collects node metadata
+- extract.py: CLI and file processing.
+- NodeCollector.py: AST visitor for node/relation extraction.
+- rel_types.py: Relation definitions.
+- ingest.py: Neo4j bulk loader.
+- `git_support.py`: Git utilities.
+
+## Performance & Limitations
+
+- Fast extraction; ingestion optimized with batching/indexes.
+- AST-accurate but static (no runtime).
+- Scales to large repos with Neo4j tuning.
+
+## Contributing
+
+PRs welcome for new features or fixes. License: MIT.
