@@ -1,5 +1,6 @@
 import json
 import os
+import time
 from neo4j import GraphDatabase
 from neo4j.exceptions import Neo4jError
 from dotenv import load_dotenv
@@ -128,8 +129,11 @@ def main():
         except Neo4jError as e:
             print("❌ Failed to connect to Neo4j:", e)
             return
+        start = time.time()
         ingest(driver, data)
+        elapsed = time.time() - start
         print("Ingestion complete")
+        print(f"Total time elapsed: {elapsed}")
     finally:
         driver.close()
 
