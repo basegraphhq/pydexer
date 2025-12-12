@@ -20,6 +20,9 @@ ALLOWED_REL_TYPES = {
     "PARAM_OF",
     "RETURNS",
     "YIELDS",
+    "ASSIGNS",
+    "INHERITS_FROM",
+    "DECORATED_BY",
 }
 
 def ingest(driver, data):

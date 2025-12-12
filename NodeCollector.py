@@ -12,6 +12,8 @@ def _get_node_kind(node: ast.AST) -> str:
         ast.YieldFrom: "yields",
         ast.Import: "import",
         ast.ImportFrom: "import",
+        ast.Assign: "assignment",
+        ast.AugAssign: "augmented_assignment",
     }
     return kind_map.get(type(node), "skip_node")
 
@@ -291,6 +293,16 @@ class NodeCollector(ast.NodeVisitor):
         self._record_named_node(node, kind)
 
         qual = self._make_qualname(node.name)
+        # Add inheritance relations
+        for base in node.bases:
+            base_name = self._extract_call_name(base)
+            if base_name:
+                self._set_relation(self.result[qual], source=qual, rel_type=RelType.INHERITS_FROM, target=base_name, pos=self._pos_dict(node))
+        # Add decorator relations
+        for decorator in node.decorator_list:
+            decorator_name = self._extract_call_name(decorator)
+            if decorator_name:
+                self._set_relation(self.result[qual], source=qual, rel_type=RelType.DECORATED_BY, target=decorator_name, pos=self._pos_dict(decorator))
         self._push_scope(qual, kind)
         self.generic_visit(node)
         self._pop_scope()
@@ -312,7 +324,11 @@ class NodeCollector(ast.NodeVisitor):
         if node.args.kwarg:
             self._record_param_node(qual, node.args.kwarg, modifier="kwarg")
         self._record_return_node(qual, node)
-
+        # Add decorator relations
+        for decorator in node.decorator_list:
+            decorator_name = self._extract_call_name(decorator)
+            if decorator_name:
+                self._set_relation(self.result[qual], source=qual, rel_type=RelType.DECORATED_BY, target=decorator_name, pos=self._pos_dict(decorator))
         self._push_scope(qual, kind)
         self.generic_visit(node)
         self._pop_scope()
@@ -334,10 +350,47 @@ class NodeCollector(ast.NodeVisitor):
         if node.args.kwarg:
             self._record_param_node(qual, node.args.kwarg, modifier="kwarg")
         self._record_return_node(qual, node)
-
+        # Add decorator relations
+        for decorator in node.decorator_list:
+            decorator_name = self._extract_call_name(decorator)
+            if decorator_name:
+                self._set_relation(self.result[qual], source=qual, rel_type=RelType.DECORATED_BY, target=decorator_name, pos=self._pos_dict(decorator))
         self._push_scope(qual, kind)
         self.generic_visit(node)
         self._pop_scope()
+
+    # ---------- assignments ----------
+
+    def visit_Assign(self, node: ast.Assign):
+        for target in node.targets:
+            if isinstance(target, ast.Name):
+                key = self._make_synthetic_key(node, "assignment")
+                meta = self._make_base_meta(
+                    qualified_name=key,
+                    parent_qualified_name=self._current_scope_qual() or self.module_name,
+                    name=target.id,
+                    kind="assignment",
+                    ast_type="Assign",
+                    pos=self._pos_dict(node),
+                )
+                self._set_relation(meta, source=key, rel_type=RelType.ASSIGNS, target=self._current_scope_qual() or self.module_name, pos=meta["pos"])
+                self.result[key] = meta
+        self.generic_visit(node)
+
+    def visit_AugAssign(self, node: ast.AugAssign):
+        if isinstance(node.target, ast.Name):
+            key = self._make_synthetic_key(node, "augmented_assignment")
+            meta = self._make_base_meta(
+                qualified_name=key,
+                parent_qualified_name=self._current_scope_qual() or self.module_name,
+                name=node.target.id,
+                kind="augmented_assignment",
+                ast_type="AugAssign",
+                pos=self._pos_dict(node),
+            )
+            self._set_relation(meta, source=key, rel_type=RelType.ASSIGNS, target=self._current_scope_qual() or self.module_name, pos=meta["pos"])
+            self.result[key] = meta
+        self.generic_visit(node)
 
     # ---------- control-flow statements ----------
 
