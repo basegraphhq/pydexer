@@ -4,6 +4,8 @@ import ast
 from pathlib import Path
 import NodeCollector
 import json
+import shutil
+from git_support import GitSupport
 
 def _module_name_from_path(filepath, package_root):
     """
@@ -16,10 +18,10 @@ def _module_name_from_path(filepath, package_root):
 
     root = Path(package_root).resolve()
     file = Path(filepath).resolve()
-    rel = file.relative_to(root).with_suffix("")  # strip .py
+    rel = file.relative_to(root).with_suffix("")
     return ".".join(rel.parts)
 
-def extract_ast_nodes(filepath, package_root: str | None = None):
+def extract_ast_nodes(filepath, qualified_file_name, package_root: str | None = None):
     with open(filepath, "r", encoding="utf-8") as source:
         code = source.read()
 
@@ -32,29 +34,24 @@ def extract_ast_nodes(filepath, package_root: str | None = None):
     collector = NodeCollector.NodeCollector(module_name=module_name)
     collector.visit(tree)
 
-    return {filepath: collector.result}
+    return collector.result
     
 
 def extract(pkgstr: str, dir:str):
     seen_namespaces = set()
     result = {}
 
-
-    # TODO: use os.walk to go through each file
-    # for each file, use AST and get components
-
     start = time.time()
     for root, _, files in os.walk(dir):
         for filename in files:
             if not filename.endswith(".py"):
                 continue
-            path = os.path.join(root, filename ) #filename
-            qualified_file_name = _derive_module_namespace(pkgstr, dir, filename) #qualified name
+            path = os.path.join(root, filename )
+            qualified_file_name = _derive_qualified_name(dir, path, pkgstr)
             if qualified_file_name not in seen_namespaces:
                 seen_namespaces.add(qualified_file_name)
-                # nodes.Namespaces.append(qualified_name) # TODO: Change this to QName instead of namespaces
-                nodes_dict = extract_ast_nodes(path)
-                if nodes_dict:
+                nodes_dict = extract_ast_nodes(path, qualified_file_name)
+                if nodes_dict and len(nodes_dict):
                     result.update(nodes_dict)
 
             
@@ -62,6 +59,21 @@ def extract(pkgstr: str, dir:str):
 
     elapsed = time.time() - start
     return result, elapsed
+
+
+def _derive_qualified_name(root:str, path:str, pkgstr:str) -> str:
+    rel_path = os.path.relpath(path, root)
+    if rel_path.endswith(".py"):
+        rel_path = rel_path[: -len(".py")]
+    rel_path = rel_path.replace(os.sep, ".")
+    if rel_path.endswith(".__init__"):
+        rel_path = rel_path[: -len(".__init__")]
+    rel_path = rel_path.strip(".")
+    if pkgstr:
+        if rel_path:
+            return f"{pkgstr}.{rel_path}"
+        return pkgstr
+    return rel_path
 
 
 def _derive_module_namespace(pkgstr: str, dir_path: str, file_path: str) -> str:
@@ -104,24 +116,25 @@ def extract_cli() -> None:
     cloned_dir = ""
     pkg = args.pkg
 
-    # if args.repo:
-    #     cloned_dir = _clone_repo(args.repo, args.ref or None)
-    #     work_dir = cloned_dir
-    #     if not pkg:
-    #         pkg = _pkg_from_repo_url(args.repo)
+    if args.repo:
+        cloned_dir = GitSupport.clone_repo(args.repo, args.ref or None)
+        work_dir = cloned_dir
+        if not pkg:
+            pkg = GitSupport.pkg_from_repo_url(args.repo)
 
     res, elapsed = extract(pkg, work_dir)
     json_output = json.dumps(res, indent=2)
-    # print(json_output)
-    # out_path = args.out
-    # out_dir = os.path.dirname(out_path) or "."
-    # os.makedirs(out_dir, exist_ok=True)
-    # with open(out_path, "w", encoding="utf-8") as f:
-    #     json.dump({"nodes": nodes.to_dict(), "relations": rels.to_dict()}, f, indent=2)
-    # print(f"Wrote results to {out_path}")
+    print(json_output)
 
-    # if cloned_dir and not args.keep_clone:
-    #     shutil.rmtree(cloned_dir, ignore_errors=True)
+    out_path = args.out
+    out_dir = os.path.dirname(out_path) or "."
+    os.makedirs(out_dir, exist_ok=True)
+    with open(out_path, "w", encoding="utf-8") as f:
+        json.dump(res, f, indent=2)
+    print(f"Wrote results to {out_path}")
+
+    if cloned_dir and not args.keep_clone:
+        shutil.rmtree(cloned_dir, ignore_errors=True)
     print(f"Total time elapsed: {elapsed}")
 
 
