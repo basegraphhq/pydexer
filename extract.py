@@ -54,9 +54,6 @@ def extract(pkgstr: str, dir:str):
                 if nodes_dict and len(nodes_dict):
                     result.update(nodes_dict)
 
-            
-    
-
     elapsed = time.time() - start
     return result, elapsed
 
@@ -122,9 +119,10 @@ def extract_cli() -> None:
         if not pkg:
             pkg = GitSupport.pkg_from_repo_url(args.repo)
 
+    print(f"Extracting from: {work_dir.split("/")[-1]}")
     res, elapsed = extract(pkg, work_dir)
-    json_output = json.dumps(res, indent=2)
-    print(json_output)
+    print("Code extraction complete.")
+    print(f"Total time elapsed: {elapsed}")
 
     out_path = args.out
     out_dir = os.path.dirname(out_path) or "."
@@ -134,9 +132,7 @@ def extract_cli() -> None:
     print(f"Wrote results to {out_path}")
 
     if cloned_dir and not args.keep_clone:
-        shutil.rmtree(cloned_dir, ignore_errors=True)
-    print(f"Total time elapsed: {elapsed}")
-
+        shutil.rmtree(cloned_dir, ignore_errors=True)  
 
 
 if __name__ == "__main__":
