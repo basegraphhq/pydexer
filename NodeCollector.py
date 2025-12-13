@@ -104,16 +104,65 @@ class NodeCollector(ast.NodeVisitor):
         if self.scope_kinds:
             self.scope_kinds.pop()
 
+    def _expr_to_name(self, expr: Optional[ast.AST]) -> Optional[str]:
+        """Return a compact, readable name for an expression, or None."""
+        if expr is None:
+            return None
+        # simple name or attribute
+        try:
+            if isinstance(expr, ast.Name):
+                return expr.id
+            if isinstance(expr, ast.Attribute):
+                return self._extract_call_name(expr)
+            # constants: show value shorthand
+            if isinstance(expr, ast.Constant):
+                return repr(expr.value)
+            # subsume calls, subscripts, etc. into an unparse fallback
+            try:
+                return ast.unparse(expr)
+            except Exception:
+                return None
+        except Exception:
+            return None
+        
     def _make_synthetic_key(self, node: ast.AST, kind: str) -> str:
         """
-        Create a stable-ish key for unnamed nodes, based on parent scope,
-        kind, and an internal counter. Uses dotted file-prefixed format.
+        Create a stable key for unnamed nodes.
+
+        Strategy:
+        - If the node has an obvious name (Assign/AugAssign) use that name.
+        - For Return nodes use the returned-expression text when available, or "null" if returning nothing.
+        - For Yield nodes use "yield".
+        - Otherwise fall back to the node's line number for stability.
         """
         parent = self._current_scope_qual() or self.module_name or self.source_file or "<unknown>"
-        counter_key = (parent, kind)
-        cur = self._synthetic_counters.get(counter_key, 0) + 1
-        self._synthetic_counters[counter_key] = cur
-        return f"{parent}.{kind}.{cur}"
+
+        # Try to extract a name-like part
+        try:
+            if isinstance(node, ast.Assign):
+                for t in node.targets:
+                    if isinstance(t, ast.Name):
+                        return f"{parent}.{kind}.{t.id}"
+            if isinstance(node, ast.AugAssign):
+                if isinstance(node.target, ast.Name):
+                    return f"{parent}.{kind}.{node.target.id}"
+            if isinstance(node, ast.Return):
+                # prefer the returned-expression string; use literal "null" when no value
+                name_part = self._expr_to_name(node.value)
+                if name_part is None:
+                    if node.value is None:
+                        name_part = "null"
+                    else:
+                        # fallback to line number if we couldn't name the expression
+                        name_part = str(getattr(node, "lineno", 0))
+                return f"{parent}.{kind}.{name_part}"
+            if isinstance(node, (ast.Yield, ast.YieldFrom)):
+                return f"{parent}.{kind}.yield"
+        except Exception:
+            pass
+
+        lineno = getattr(node, "lineno", None) or 0
+        return f"{parent}.{kind}.{lineno}"
 
 
     def _set_relation(self, meta: Dict[str, Any], source: Optional[str], rel_type: Optional[Union[RelType, str]], target: Optional[str], pos: Optional[Dict[str, Optional[int]]] = None):
@@ -377,7 +426,8 @@ class NodeCollector(ast.NodeVisitor):
     def visit_Assign(self, node: ast.Assign):
         for target in node.targets:
             if isinstance(target, ast.Name):
-                key = self._make_synthetic_key(node, "assignment")
+                parent = self._current_scope_qual() or self.module_name
+                key = f"{parent}.asignment.{target.id}"
                 meta = self._make_base_meta(
                     qualified_name=key,
                     parent_qualified_name=self._current_scope_qual() or self.module_name,
@@ -392,7 +442,8 @@ class NodeCollector(ast.NodeVisitor):
 
     def visit_AugAssign(self, node: ast.AugAssign):
         if isinstance(node.target, ast.Name):
-            key = self._make_synthetic_key(node, "augmented_assignment")
+            parent = self._current_scope_qual() or self.module_name
+            key = f"{parent}.augmented_assignment.{node.target.id}"
             meta = self._make_base_meta(
                 qualified_name=key,
                 parent_qualified_name=self._current_scope_qual() or self.module_name,
@@ -491,11 +542,13 @@ class NodeCollector(ast.NodeVisitor):
         kind = _get_node_kind(node)
         if kind == "returns":
             func_qual = self._current_callable_scope()
+            # compute a key that includes the returned-expression (or "null")
             key = self._make_synthetic_key(node, kind)
+            returned_name = self._expr_to_name(node.value)  # None when no value or not nameable
             meta = self._make_base_meta(
                 qualified_name=key,
                 parent_qualified_name=func_qual or self.module_name,
-                name=None,
+                name=returned_name,
                 kind=kind,
                 ast_type=type(node).__name__,
                 pos=self._pos_dict(node),
