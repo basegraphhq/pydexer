@@ -3,28 +3,17 @@ import os
 import time
 from neo4j import GraphDatabase
 from neo4j.exceptions import Neo4jError
+from rel_types import RelType
 from dotenv import load_dotenv
 load_dotenv()
 
 # Configuration (set these env vars before running)
 NEO4J_URI = os.environ.get("NEO4J_URI", "neo4j://127.0.0.1:7687")
 NEO4J_USER = os.environ.get("NEO4J_USER", "neo4j")
-NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "nithin123")
+NEO4J_PASSWORD = os.environ.get("NEO4J_PASSWORD", "password")
 
 INPUT_JSON = os.environ.get("INPUT_JSON", "output/output.json")  # path to the pydexer output
-ALLOWED_REL_TYPES = {
-    "IMPORTS",
-    "CLASS_DEF",
-    "FUNCTION_DEF",
-    "CALLS",
-    "CALLED_BY",
-    "PARAM_OF",
-    "RETURNS",
-    "YIELDS",
-    "ASSIGNS",
-    "INHERITS_FROM",
-    "DECORATED_BY",
-}
+ALLOWED_REL_TYPES = {r.value for r in RelType}
 
 def ingest(driver, data):
     batch_size = 1000  # Commit every 1000 operations
@@ -52,14 +41,6 @@ def ingest(driver, data):
                     tx.commit()
                     tx = session.begin_transaction()
         tx.commit()  # Commit any remaining
-
-def _create_file_node(tx, file_path):
-    tx.run(
-        """
-        MERGE (f:File {path: $path})
-        """,
-        path=file_path,
-    )
 
 def _create_code_node(tx, qual, meta):
     tx.run(

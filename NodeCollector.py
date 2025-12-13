@@ -14,6 +14,8 @@ def _get_node_kind(node: ast.AST) -> str:
         ast.ImportFrom: "import",
         ast.Assign: "assignment",
         ast.AugAssign: "augmented_assignment",
+        ast.Try: "try",
+        ast.ExceptHandler: "except",
     }
     return kind_map.get(type(node), "skip_node")
 
@@ -25,6 +27,8 @@ class NodeCollector(ast.NodeVisitor):
         self.scope_stack: list[str] = []
         self.scope_kinds: list[str] = []
         self.result: Dict[str, Dict[str, Any]] = {}
+        # map local symbol -> fully-qualified symbol from imports (e.g. foo -> pkg.module.foo)
+        self._import_map: Dict[str, str] = {}
 
         # NEW: counter for synthetic nodes so keys don't need line/col
         self._synthetic_counters: Dict[tuple[str, str], int] = {}
@@ -254,6 +258,22 @@ class NodeCollector(ast.NodeVisitor):
         )
         self._set_relation(meta, source=key, rel_type=RelType.IMPORTS, target=parent_qual, pos=meta["pos"])
         self.result[key] = meta
+        # Populate import map to help resolve simple names to fully-qualified targets.
+        # `module` may be full (e.g. "pkg.mod.name") for `from pkg.mod import name` calls
+        # or may be a module path for plain imports. Map the local symbol (alias or last part)
+        # to the full module path so later call resolution can expand names.
+        try:
+            full = module
+            local = alias or (module.split(".")[-1] if module else module)
+            if local:
+                self._import_map[local] = full
+            # also map top-level package name -> itself to help attribute resolution
+            if module and "." in module:
+                top = module.split(".")[0]
+                if top not in self._import_map:
+                    self._import_map[top] = top
+        except Exception:
+            pass
 
 
 
@@ -317,8 +337,14 @@ class NodeCollector(ast.NodeVisitor):
         return None
 
     def _extract_call_name(self, func: ast.AST) -> Optional[str]:
+        # Name: try to expand using import map (e.g. `from pkg.mod import f` -> f -> pkg.mod.f)
         if isinstance(func, ast.Name):
-            return func.id
+            name = func.id
+            mapped = self._import_map.get(name)
+            if mapped:
+                return mapped
+            return name
+        # Attribute: build dotted name and substitute import map for base if available
         if isinstance(func, ast.Attribute):
             parts: List[str] = []
             current = func
@@ -340,11 +366,21 @@ class NodeCollector(ast.NodeVisitor):
                     base = class_scope
             if base is None:
                 return None
+            # expand base using import map if present
+            if base in self._import_map:
+                base = self._import_map[base]
             parts.append(base)
             parts.reverse()
             return ".".join(parts)
+        # fallback: try to unparse complex expressions
         try:
-            return ast.unparse(func)
+            text = ast.unparse(func)
+            # If the unparsed text is a simple name, try map as well
+            if "." not in text:
+                mapped = self._import_map.get(text)
+                if mapped:
+                    return mapped
+            return text
         except Exception:
             return None
 
@@ -479,8 +515,76 @@ class NodeCollector(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Try(self, node: ast.Try):
-        kind = _get_node_kind(node)
-        self._record_unnamed_node(node, kind)
+        """
+        Record a synthetic 'try' node and one 'except' node per handler.
+        Except keys follow: <parent>.except.<handler_ordinal>.<exception_name>
+        Relations:
+        - try_node --EXCEPT--> except_node
+        - except_node --TRY--> try_node
+        """
+        parent_qual = self._current_scope_qual() or self.module_name
+        # create try node (try_key remains based on synthetic key which already uses parent)
+        try_key = self._make_synthetic_key(node, "try")
+        try_meta = self._make_base_meta(
+            qualified_name=try_key,
+            parent_qualified_name=parent_qual,
+            name=None,
+            kind="try",
+            ast_type=type(node).__name__,
+            pos=self._pos_dict(node),
+        )
+        self.result[try_key] = try_meta
+
+        for idx, handler in enumerate(node.handlers):
+            # readable exception identifier: type name or 'any'
+            exc_name = None
+            try:
+                exc_name = self._expr_to_name(handler.type) if getattr(handler, "type", None) is not None else None
+            except Exception:
+                exc_name = None
+            if not exc_name:
+                exc_name = getattr(handler, "name", None) or "any"
+
+            # Use parent + ordinal + exception-name for deterministic, human-readable keys
+            except_key = f"{parent_qual}.except.{idx}.{exc_name}"
+
+            except_meta = self._make_base_meta(
+                qualified_name=except_key,
+                parent_qualified_name=parent_qual,
+                name=exc_name,
+                kind="except",
+                ast_type=type(handler).__name__,
+                pos=self._pos_dict(handler),
+            )
+
+            # relations: try -> EXCEPT -> except_node
+            self._set_relation(try_meta, source=try_key, rel_type=RelType.EXCEPT, target=except_key, pos=self._pos_dict(handler))
+            # except -> TRY -> try_node
+            self._set_relation(except_meta, source=except_key, rel_type=RelType.TRY, target=try_key, pos=self._pos_dict(handler))
+
+            self.result[except_key] = except_meta
+
+        # create finally node if present
+        if node.finalbody:
+            # lineno = getattr(node, "lineno", None) or getattr(node, "end_lineno", None) or 0
+            lineno = getattr(node.finalbody[0], "lineno", None)-1 or getattr(node.finalbody[0], "end_lineno", None) or 0
+            # key the finally node under the parent with line number for uniqueness
+            finally_key = f"{parent_qual}.finally.{lineno}"
+            finally_meta = self._make_base_meta(
+                qualified_name=finally_key,
+                parent_qualified_name=parent_qual,
+                name=None,
+                kind="finally",
+                ast_type="Finally",
+                pos=self._pos_dict(node),
+            )
+            # relations: try -> FINALLY -> finally_node
+            self._set_relation(try_meta, source=try_key, rel_type=RelType.FINALLY, target=finally_key, pos=self._pos_dict(node))
+            # finally -> TRY -> try_node (reverse link)
+            self._set_relation(finally_meta, source=finally_key, rel_type=RelType.TRY, target=try_key, pos=self._pos_dict(node))
+            self.result[finally_key] = finally_meta
+
+        # continue walking children (body, handlers' bodies, orelse, finalbody)
         self.generic_visit(node)
 
     def visit_With(self, node: ast.With):
@@ -523,13 +627,11 @@ class NodeCollector(ast.NodeVisitor):
     # ---------- imports ----------
 
     def visit_Import(self, node: ast.Import):
-        kind = _get_node_kind(node)  # "import"
         for alias in node.names:
             self._record_import_node(node, alias.name, alias.asname)
         self.generic_visit(node)
 
     def visit_ImportFrom(self, node: ast.ImportFrom):
-        kind = _get_node_kind(node)  # "import"
         module = node.module or ""
         for alias in node.names:
             target = f"{module}.{alias.name}" if module else alias.name
