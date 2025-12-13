@@ -18,6 +18,9 @@ class RelType(str, Enum):
     ASSIGNS = "ASSIGNS"
     INHERITS_FROM = "INHERITS_FROM"
     DECORATED_BY = "DECORATED_BY"
+    TRY = "TRY"
+    EXCEPT = "EXCEPT"
+    FINALLY = "FINALLY"
     # Add additional relation types here as needed.
 
 # Optional convenience mapping: node kind -> default relation type.

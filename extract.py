@@ -7,21 +7,6 @@ import json
 import shutil
 from git_support import GitSupport
 
-def _module_name_from_path(filepath, package_root):
-    """
-    Optional helper: derive module name from the file path.
-    - filepath: e.g. "/root/project/pkg/subpkg/mod.py"
-    - package_root: e.g. "/root/project" or "/root/project/pkg"
-    """
-    if package_root is None:
-        return None
-
-    root = Path(package_root).resolve()
-    file = Path(filepath).resolve()
-    rel = file.relative_to(root).with_suffix("")
-    return ".".join(rel.parts)
-
-
 def _extract_docstring_from_tree(tree):
     """Extract module docstring from the AST tree."""
     if tree.body and isinstance(tree.body[0], ast.Expr) and isinstance(tree.body[0].value, ast.Constant) and isinstance(tree.body[0].value.value, str):
@@ -37,7 +22,6 @@ def extract_ast_nodes(filepath, qualified_file_name, package_root: str | None = 
     except SyntaxError:
         return
 
-    module_name = _module_name_from_path(filepath, package_root)
     # use the per-file qualified name as the module namespace
     collector = NodeCollector.NodeCollector(module_name=qualified_file_name, source_file=qualified_file_name)
     collector.visit(tree)
@@ -92,21 +76,6 @@ def _derive_qualified_name(root:str, path:str, pkgstr:str) -> str:
             return f"{pkgstr}.{rel_path}"
         return pkgstr
     return rel_path
-
-
-def _derive_module_namespace(pkgstr: str, dir_path: str, file_path: str) -> str:
-    rel = os.path.relpath(file_path, dir_path)
-    if rel.endswith(".py"):
-        rel = rel[: -len(".py")]
-    rel = rel.replace(os.sep, ".")
-    if rel.endswith(".__init__"):
-        rel = rel[: -len(".__init__")]
-    rel = rel.strip(".")
-    if pkgstr:
-        if rel:
-            return f"{pkgstr}.{rel}"
-        return pkgstr
-    return rel
 
 def extract_cli() -> None:
     import argparse
