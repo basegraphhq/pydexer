@@ -15,6 +15,12 @@ class RelType(str, Enum):
     CALLS = "CALLS"
     CALLED_BY = "CALLED_BY"
     YIELDS = "YIELDS"
+    ASSIGNS = "ASSIGNS"
+    INHERITS_FROM = "INHERITS_FROM"
+    DECORATED_BY = "DECORATED_BY"
+    TRY = "TRY"
+    EXCEPT = "EXCEPT"
+    FINALLY = "FINALLY"
     # Add additional relation types here as needed.
 
 # Optional convenience mapping: node kind -> default relation type.

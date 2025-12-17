@@ -6,20 +6,7 @@ import NodeCollector
 import json
 import shutil
 from git_support import GitSupport
-
-def _module_name_from_path(filepath, package_root):
-    """
-    Optional helper: derive module name from the file path.
-    - filepath: e.g. "/root/project/pkg/subpkg/mod.py"
-    - package_root: e.g. "/root/project" or "/root/project/pkg"
-    """
-    if package_root is None:
-        return None
-
-    root = Path(package_root).resolve()
-    file = Path(filepath).resolve()
-    rel = file.relative_to(root).with_suffix("")
-    return ".".join(rel.parts)
+from ast_utils import extract_docstring
 
 def extract_ast_nodes(filepath, qualified_file_name, package_root: str | None = None):
     with open(filepath, "r", encoding="utf-8") as source:
@@ -30,9 +17,22 @@ def extract_ast_nodes(filepath, qualified_file_name, package_root: str | None = 
     except SyntaxError:
         return
 
-    module_name = _module_name_from_path(filepath, package_root)
-    collector = NodeCollector.NodeCollector(module_name=module_name)
+    # use the per-file qualified name as the module namespace
+    collector = NodeCollector.NodeCollector(module_name=qualified_file_name, source_file=qualified_file_name)
     collector.visit(tree)
+
+    # Add module node with docstring (keyed by the file-qualified name)
+    docstring = extract_docstring(tree)
+    collector.result[qualified_file_name] = {
+        "kind": "module",
+        "name": qualified_file_name,
+        "pos": {"start": 1, "end": 1},
+        "ast_type": "Module",
+        "docstring": docstring,
+        "relations": [],
+        "qualified_name": qualified_file_name,
+        "parent_qualified_name": None,
+    }
 
     return collector.result
     
@@ -72,21 +72,6 @@ def _derive_qualified_name(root:str, path:str, pkgstr:str) -> str:
         return pkgstr
     return rel_path
 
-
-def _derive_module_namespace(pkgstr: str, dir_path: str, file_path: str) -> str:
-    rel = os.path.relpath(file_path, dir_path)
-    if rel.endswith(".py"):
-        rel = rel[: -len(".py")]
-    rel = rel.replace(os.sep, ".")
-    if rel.endswith(".__init__"):
-        rel = rel[: -len(".__init__")]
-    rel = rel.strip(".")
-    if pkgstr:
-        if rel:
-            return f"{pkgstr}.{rel}"
-        return pkgstr
-    return rel
-
 def extract_cli() -> None:
     import argparse
 
@@ -119,7 +104,7 @@ def extract_cli() -> None:
         if not pkg:
             pkg = GitSupport.pkg_from_repo_url(args.repo)
 
-    print(f"Extracting from: {work_dir.split("/")[-1]}")
+    print(f"Extracting from: {os.path.basename(work_dir)}")
     res, elapsed = extract(pkg, work_dir)
     print("Code extraction complete.")
     print(f"Total time elapsed: {elapsed}")
