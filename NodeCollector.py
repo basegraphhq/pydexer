@@ -273,13 +273,12 @@ class NodeCollector(ast.NodeVisitor):
                     self._import_map[local] = full
                 else:
                     # `import pkg.mod` -> map `pkg` to `pkg` (top-level package)
-                    if module:
-                        top = module.split(".")[0]
-                        if top not in self._import_map:
-                            self._import_map[top] = top
+                    top = module.split(".")[0]
+                    if top not in self._import_map:
+                        self._import_map[top] = top
             else:
                 # For `from` imports, map the imported name to the full path
-                local = alias or (module.split(".")[-1] if module else module)
+                local = alias or module.split(".")[-1]
                 if local:
                     self._import_map[local] = full
         except Exception:
