@@ -123,7 +123,10 @@ class NodeCollector(ast.NodeVisitor):
             if isinstance(expr, ast.Constant):
                 return repr(expr.value)
             # subsume calls, subscripts, etc. into an unparse fallback
-            return ast.unparse(expr)
+            try:
+                return ast.unparse(expr)
+            except Exception:
+                return None
         except Exception:
             return None
         
@@ -206,7 +209,7 @@ class NodeCollector(ast.NodeVisitor):
             modifier=None,
         )
 
-        meta["docstring"] = self._extract_docstring(node)
+        meta["docstring"] = extract_docstring(node)
 
         rel_type = None
         if kind == "class":
@@ -262,9 +265,11 @@ class NodeCollector(ast.NodeVisitor):
         # or may be a module path for plain imports. Map the local symbol (alias or last part)
         # to the full module path so later call resolution can expand names.
         try:
+            # `full` is the module path for plain imports (e.g., "pkg.mod" for `import pkg.mod`)
+            # or the fully-qualified symbol (e.g., "pkg.mod.func" for `from pkg.mod import func`)
             full = module
-            # For plain imports like `import pkg.mod`, Python binds `pkg` in the local namespace.
-            # The import map tracks `pkg` -> `pkg` for plain imports without aliases.
+            # For plain imports like `import pkg.mod`, Python binds only the top-level package `pkg`.
+            # We map `pkg` -> `pkg` to preserve this binding for attribute resolution.
             # For `from` imports, we map the imported symbol to its fully-qualified name.
             if isinstance(node, ast.Import):
                 if alias:
@@ -339,10 +344,6 @@ class NodeCollector(ast.NodeVisitor):
     def _record_function_relationships(self, func_qual: str):
         # Intentionally minimal: no extra relationships beyond definition edges
         return
-    
-    def _extract_docstring(self, node):
-        """Extract docstring from the first statement if it's a string constant."""
-        return extract_docstring(node)
 
     def _extract_call_name(self, func: ast.AST) -> Optional[str]:
         # Name: try to expand using import map (e.g. `from pkg.mod import f` -> f -> pkg.mod.f)
