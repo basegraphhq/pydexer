@@ -263,20 +263,25 @@ class NodeCollector(ast.NodeVisitor):
         # to the full module path so later call resolution can expand names.
         try:
             full = module
-            # The imported module path is provided (e.g. `import pkg.mod` binds `pkg.mod`, not just `mod`).
-            # For `from` imports, keep using the imported symbol name (last segment).
+            # For plain imports like `import pkg.mod`, Python binds `pkg` in the local namespace.
+            # The import map tracks `pkg` -> `pkg` for plain imports without aliases.
+            # For `from` imports, we map the imported symbol to its fully-qualified name.
             if isinstance(node, ast.Import):
-                # For plain imports without alias, bind the first part of the module path
-                local = alias if alias else (module.split(".")[0] if module else None)
+                if alias:
+                    # `import pkg.mod as pm` -> map `pm` to `pkg.mod`
+                    local = alias
+                    self._import_map[local] = full
+                else:
+                    # `import pkg.mod` -> map `pkg` to `pkg` (top-level package)
+                    if module:
+                        top = module.split(".")[0]
+                        if top not in self._import_map:
+                            self._import_map[top] = top
             else:
+                # For `from` imports, map the imported name to the full path
                 local = alias or (module.split(".")[-1] if module else module)
-            if local:
-                self._import_map[local] = full
-            # also map top-level package name -> itself to help attribute resolution
-            if module and "." in module:
-                top = module.split(".")[0]
-                if top not in self._import_map:
-                    self._import_map[top] = top
+                if local:
+                    self._import_map[local] = full
         except Exception:
             # Best-effort population of the import map; failures here should not break collection.
             pass
