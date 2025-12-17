@@ -6,12 +6,7 @@ import NodeCollector
 import json
 import shutil
 from git_support import GitSupport
-
-def _extract_docstring_from_tree(tree):
-    """Extract module docstring from the AST tree."""
-    if tree.body and isinstance(tree.body[0], ast.Expr) and isinstance(tree.body[0].value, ast.Constant) and isinstance(tree.body[0].value.value, str):
-        return tree.body[0].value.value
-    return None
+from ast_utils import extract_docstring
 
 def extract_ast_nodes(filepath, qualified_file_name, package_root: str | None = None):
     with open(filepath, "r", encoding="utf-8") as source:
@@ -27,7 +22,7 @@ def extract_ast_nodes(filepath, qualified_file_name, package_root: str | None = 
     collector.visit(tree)
 
     # Add module node with docstring (keyed by the file-qualified name)
-    docstring = _extract_docstring_from_tree(tree)
+    docstring = extract_docstring(tree)
     collector.result[qualified_file_name] = {
         "kind": "module",
         "name": qualified_file_name,
@@ -109,7 +104,7 @@ def extract_cli() -> None:
         if not pkg:
             pkg = GitSupport.pkg_from_repo_url(args.repo)
 
-    print(f"Extracting from: {work_dir.split("/")[-1]}")
+    print(f"Extracting from: {os.path.basename(work_dir)}")
     res, elapsed = extract(pkg, work_dir)
     print("Code extraction complete.")
     print(f"Total time elapsed: {elapsed}")
