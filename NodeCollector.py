@@ -536,7 +536,7 @@ class NodeCollector(ast.NodeVisitor):
         self.result[try_key] = try_meta
 
         for idx, handler in enumerate(node.handlers):
-            # readable exception identifier: type name or 'any'
+            # readable exception identifier for the key: type name or 'any'
             exc_name = None
             try:
                 exc_name = self._expr_to_name(handler.type) if getattr(handler, "type", None) is not None else None
