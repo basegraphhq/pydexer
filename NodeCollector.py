@@ -1,6 +1,7 @@
 import ast
 from typing import Dict, Any, Optional, List, Union
 from rel_types import RelType, KIND_TO_REL, rel_to_str
+from ast_utils import extract_docstring
 
 def _get_node_kind(node: ast.AST) -> str:
     kind_map = {
@@ -122,10 +123,7 @@ class NodeCollector(ast.NodeVisitor):
             if isinstance(expr, ast.Constant):
                 return repr(expr.value)
             # subsume calls, subscripts, etc. into an unparse fallback
-            try:
-                return ast.unparse(expr)
-            except Exception:
-                return None
+            return ast.unparse(expr)
         except Exception:
             return None
         
@@ -265,10 +263,11 @@ class NodeCollector(ast.NodeVisitor):
         # to the full module path so later call resolution can expand names.
         try:
             full = module
-            # is provided (e.g. `import pkg.mod` binds `pkg.mod`, not just `mod`).
+            # The imported module path is provided (e.g. `import pkg.mod` binds `pkg.mod`, not just `mod`).
             # For `from` imports, keep using the imported symbol name (last segment).
             if isinstance(node, ast.Import):
-                local = alias
+                # For plain imports without alias, bind the first part of the module path
+                local = alias if alias else (module.split(".")[0] if module else None)
             else:
                 local = alias or (module.split(".")[-1] if module else module)
             if local:
@@ -339,9 +338,7 @@ class NodeCollector(ast.NodeVisitor):
     
     def _extract_docstring(self, node):
         """Extract docstring from the first statement if it's a string constant."""
-        if hasattr(node, "body") and node.body and isinstance(node.body[0], ast.Expr) and isinstance(node.body[0].value, ast.Constant) and isinstance(node.body[0].value.value, str):
-            return node.body[0].value.value
-        return None
+        return extract_docstring(node)
 
     def _extract_call_name(self, func: ast.AST) -> Optional[str]:
         # Name: try to expand using import map (e.g. `from pkg.mod import f` -> f -> pkg.mod.f)
@@ -466,20 +463,43 @@ class NodeCollector(ast.NodeVisitor):
 
     # ---------- assignments ----------
 
+    def _iter_assign_targets(self, target: ast.expr):
+        """
+        Yield all simple Name nodes contained in an assignment target.
+
+        This covers plain names (e.g., `x = 1`) as well as names that
+        appear inside tuple/list unpacking and starred targets
+        (e.g., `a, (b, c) = values`, `*rest, last = seq`).
+        """
+        if isinstance(target, ast.Name):
+            yield target
+        elif isinstance(target, (ast.Tuple, ast.List)):
+            for elt in target.elts:
+                yield from self._iter_assign_targets(elt)
+        elif isinstance(target, ast.Starred):
+            # For starred targets like `*rest`, recurse into the value.
+            yield from self._iter_assign_targets(target.value)
+
     def visit_Assign(self, node: ast.Assign):
+        parent = self._current_scope_qual() or self.module_name
         for target in node.targets:
-            if isinstance(target, ast.Name):
-                parent = self._current_scope_qual() or self.module_name
-                key = f"{parent}.assignment.{target.id}"
+            for name_node in self._iter_assign_targets(target):
+                key = f"{parent}.assignment.{name_node.id}"
                 meta = self._make_base_meta(
                     qualified_name=key,
-                    parent_qualified_name=self._current_scope_qual() or self.module_name,
-                    name=target.id,
+                    parent_qualified_name=parent,
+                    name=name_node.id,
                     kind="assignment",
                     ast_type="Assign",
                     pos=self._pos_dict(node),
                 )
-                self._set_relation(meta, source=key, rel_type=RelType.ASSIGNS, target=self._current_scope_qual() or self.module_name, pos=meta["pos"])
+                self._set_relation(
+                    meta,
+                    source=key,
+                    rel_type=RelType.ASSIGNS,
+                    target=parent,
+                    pos=meta["pos"],
+                )
                 self.result[key] = meta
         self.generic_visit(node)
 
@@ -573,12 +593,14 @@ class NodeCollector(ast.NodeVisitor):
 
         # create finally node if present
         if node.finalbody:
-            # lineno = getattr(node, "lineno", None) or getattr(node, "end_lineno", None) or 0
-            first_final_lineno = getattr(node.finalbody[0], "lineno", None)
-            if first_final_lineno is not None:
-                lineno = first_final_lineno - 1
-            else:
-                lineno = getattr(node.finalbody[0], "end_lineno", None) or 0
+            # Derive a stable line number for the synthetic 'finally' node.
+            # Prefer the Try node's end position, then fall back to the first
+            # statement in the finalbody, and finally to the Try's own lineno.
+            lineno = getattr(node, "end_lineno", None)
+            if lineno is None:
+                lineno = getattr(node.finalbody[0], "lineno", None)
+            if lineno is None:
+                lineno = getattr(node, "lineno", None) or 0
             # key the finally node under the parent with line number for uniqueness
             finally_key = f"{parent_qual}.finally.{lineno}"
             finally_meta = self._make_base_meta(
