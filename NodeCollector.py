@@ -551,7 +551,7 @@ class NodeCollector(ast.NodeVisitor):
             except_meta = self._make_base_meta(
                 qualified_name=except_key,
                 parent_qualified_name=parent_qual,
-                name=exc_name,
+                name=None,
                 kind="except",
                 ast_type=type(handler).__name__,
                 pos=self._pos_dict(handler),
